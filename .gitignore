@@ -317,3 +317,10 @@ http-client.private.env.json
 
 # Exclude logs directory
 logs/*
+
+# Data files — never committed
+data/
+*.csv
+*.parquet
+*.csv.gz
+*.json
