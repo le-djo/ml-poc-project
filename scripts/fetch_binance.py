@@ -3,19 +3,31 @@ fetch_binance.py — collect Binance klines and aggTrades for every pump event.
 
 Usage
 -----
-  python scripts/fetch_binance.py            # dry run (first 3 events only)
+  python scripts/fetch_binance.py            # dry run: aggtrades vision, first 3 events
   python scripts/fetch_binance.py --dry-run  # same
   python scripts/fetch_binance.py --full     # all 520 events
 
 Output
 ------
-  data/RAW/klines/     {SYMBOL}BTC_{unix_seconds}.parquet   (1m klines, 150 rows each)
-  data/RAW/aggtrades/  {SYMBOL}BTC_{unix_seconds}.parquet   (15-min aggTrades window)
-  data/RAW/failed_symbols.txt                               (symbols that returned 400)
+  data/RAW/klines/          {SYMBOL}BTC_{unix_seconds}.parquet  (1m klines, 150 rows)
+  data/RAW/aggtrades/       {SYMBOL}BTC_{unix_seconds}.parquet  (aggTrades via vision)
+  data/RAW/failed_symbols.txt                                   (klines 400 errors)
+  data/RAW/failed_aggtrades.txt                                 (vision 404 errors)
+
+aggTrades strategy
+------------------
+The Binance REST /aggTrades endpoint only retains a rolling window of a few months.
+All pump events (2018-2020) fall outside this window — the REST endpoint returns 0 rows.
+Fix: data.binance.vision, Binance's official static archive (full history since 2017).
+URL: https://data.binance.vision/data/spot/daily/aggTrades/{SYMBOL}/{SYMBOL}-{YYYY-MM-DD}.zip
+No API key required. 0.5s sleep between downloads.
 """
 
 import argparse
+import io
 import time
+import zipfile
+from datetime import timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -24,13 +36,21 @@ import requests
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-BASE_URL = "https://api.binance.com/api/v3"
-KLINES_DIR = Path("data/RAW/klines")
-AGGTRADES_DIR = Path("data/RAW/aggtrades")
-FAILED_LOG = Path("data/RAW/failed_symbols.txt")
+BASE_URL    = "https://api.binance.com/api/v3"
+VISION_BASE = "https://data.binance.vision/data/spot/daily/aggTrades"
 
-WEIGHT_PER_CALL = 2
+KLINES_DIR          = Path("data/RAW/klines")
+AGGTRADES_DIR       = Path("data/RAW/aggtrades")
+FAILED_LOG          = Path("data/RAW/failed_symbols.txt")
+FAILED_AGGTRADES_LOG = Path("data/RAW/failed_aggtrades.txt")
+
+WEIGHT_PER_CALL  = 2
 SAFE_WEIGHT_LIMIT = 500   # proactive throttle — well below the 1200/min hard limit
+
+_AGGTRADE_VISION_COLS = [
+    "agg_id", "price", "qty", "first_trade_id",
+    "last_trade_id", "timestamp", "is_buyer_maker",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +261,122 @@ def collect_event(row: pd.Series, rl: RateLimiter, n_failed: list) -> None:
 
 
 # ---------------------------------------------------------------------------
+# aggTrades via data.binance.vision (historical archive — replaces REST API)
+# ---------------------------------------------------------------------------
+
+def fetch_aggtrades_vision(symbol: str, pump_ts: pd.Timestamp) -> pd.DataFrame:
+    """
+    Download daily aggTrades ZIP files from data.binance.vision and return
+    the rows that fall in [pump_ts - 10min, pump_ts).
+
+    Downloads up to two days (day-before + day-of) to handle events that
+    span midnight UTC.  Each 404 is logged to FAILED_AGGTRADES_LOG.
+    """
+    window_start_ms = int((pump_ts - pd.Timedelta(minutes=10)).timestamp() * 1000)
+    window_end_ms   = int(pump_ts.timestamp() * 1000)
+
+    date_of  = pump_ts.date()
+    date_pre = date_of - timedelta(days=1)
+
+    frames = []
+    for date in (date_pre, date_of):
+        url = f"{VISION_BASE}/{symbol}/{symbol}-{date}.zip"
+        print(f"  GET {url}")
+        try:
+            resp = requests.get(url, timeout=30)
+        except requests.RequestException as exc:
+            print(f"  [network error] {exc}")
+            continue
+
+        if resp.status_code == 404:
+            with FAILED_AGGTRADES_LOG.open("a") as f:
+                f.write(f"{symbol},{date},404\n")
+            print(f"  404 — not in archive")
+            time.sleep(0.5)
+            continue
+
+        resp.raise_for_status()
+        time.sleep(0.5)   # respectful throttle after each successful download
+
+        with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+            csv_name = zf.namelist()[0]
+            with zf.open(csv_name) as f:
+                df = pd.read_csv(
+                    f, header=None, names=_AGGTRADE_VISION_COLS,
+                    dtype={"price": float, "qty": float, "timestamp": "int64",
+                           "is_buyer_maker": bool},
+                )
+        frames.append(df)
+
+    if not frames:
+        return pd.DataFrame(columns=_AGGTRADE_VISION_COLS)
+
+    combined = pd.concat(frames, ignore_index=True)
+    # Filter to [pump_ts - 10min, pump_ts) — strictly before pump
+    filtered = combined[
+        (combined["timestamp"] >= window_start_ms) &
+        (combined["timestamp"] <  window_end_ms)
+    ].reset_index(drop=True)
+    return filtered
+
+
+def collect_aggtrades_loop(events: pd.DataFrame, dry_run: bool) -> None:
+    """
+    Iterate events and collect aggTrades via data.binance.vision.
+
+    Checkpoint: skip if parquet already exists AND has rows > 0
+    (empty parquets from the failed REST attempt are re-downloaded).
+    """
+    subset = events.head(3) if dry_run else events
+    total  = len(subset)
+    n_failed = 0
+
+    print(f"\n--- aggTrades via data.binance.vision ({'DRY RUN — 3 events' if dry_run else f'{total} events'}) ---")
+
+    for i, (_, row) in enumerate(subset.iterrows(), 1):
+        symbol  = row["binance_symbol"]
+        pump_ts = row["pump_ts"]
+        ts_unix = int(pump_ts.timestamp())
+        agg_path = AGGTRADES_DIR / f"{symbol}_{ts_unix}.parquet"
+
+        # Skip only if file exists and is non-empty
+        if agg_path.exists():
+            existing = pd.read_parquet(agg_path)
+            if len(existing) > 0:
+                print(f"  skip {symbol} {pump_ts.date()} ({len(existing)} rows already saved)")
+                continue
+
+        print(f"\n[{i}/{total}] {symbol} @ {pump_ts}")
+        try:
+            df = fetch_aggtrades_vision(symbol, pump_ts)
+            df.to_parquet(agg_path, index=False)
+            print(f"  → saved {len(df)} rows to {agg_path.name}")
+        except Exception as exc:
+            print(f"  [ERROR] {exc}")
+            with FAILED_AGGTRADES_LOG.open("a") as f:
+                f.write(f"{symbol},{pump_ts},error,{exc}\n")
+            n_failed += 1
+
+        if i % 10 == 0:
+            print(f"Progress: {i}/{total} | Failed: {n_failed}")
+
+    print(f"\naggTrades done. {total - n_failed}/{total} processed. Failed: {n_failed}")
+
+    if dry_run:
+        saved = [p for p in AGGTRADES_DIR.glob("*.parquet")
+                 if pd.read_parquet(p).shape[0] > 0]
+        print(f"\nNon-empty aggtrade files: {len(saved)}")
+        for p in sorted(saved)[:3]:
+            df = pd.read_parquet(p)
+            print(f"  {p.name}: {df.shape}")
+        if n_failed == 0:
+            print("\nDRY RUN OK — ready for full collection")
+            print("Run:  python scripts/fetch_binance.py --full")
+        else:
+            print(f"\nDRY RUN finished with {n_failed} failures — check {FAILED_AGGTRADES_LOG}")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -249,54 +385,12 @@ def main(dry_run: bool = True) -> None:
     KLINES_DIR.mkdir(parents=True, exist_ok=True)
     AGGTRADES_DIR.mkdir(parents=True, exist_ok=True)
 
-    rl = RateLimiter()
-    n_failed = [0]
+    # Klines are already collected (333 files from previous run).
+    # This script now focuses on fixing aggTrades via data.binance.vision.
+    kline_count = len(list(KLINES_DIR.glob("*.parquet")))
+    print(f"Klines already collected: {kline_count} files (checkpoint will skip all)")
 
-    if dry_run:
-        subset = events.head(3)
-        print("\n--- DRY RUN (first 3 events) ---")
-        print("URLs that will be called:")
-        for _, row in subset.iterrows():
-            sym = row["binance_symbol"]
-            print(f"  klines:    {BASE_URL}/klines?symbol={sym}&interval=1m"
-                  f"&startTime={row['kline_start_ms']}&endTime={row['kline_end_ms']}&limit=1000")
-            print(f"  aggTrades: {BASE_URL}/aggTrades?symbol={sym}"
-                  f"&startTime={row['agg_start_ms']}&endTime={row['agg_end_ms']}")
-        print()
-
-        for _, row in subset.iterrows():
-            print(f"Fetching {row['binance_symbol']} @ {row['pump_ts']} ...")
-            collect_event(row, rl, n_failed)
-
-        # Verification
-        kline_files = sorted(KLINES_DIR.glob("*.parquet"))
-        agg_files   = sorted(AGGTRADES_DIR.glob("*.parquet"))
-        print(f"\nKlines files saved    : {len(kline_files)}")
-        print(f"AggTrades files saved : {len(agg_files)}")
-        for p in kline_files[:3]:
-            df = pd.read_parquet(p)
-            print(f"  {p.name}: {df.shape}")
-        for p in agg_files[:3]:
-            df = pd.read_parquet(p)
-            print(f"  {p.name}: {df.shape}")
-
-        if n_failed[0] == 0 and len(kline_files) >= 3 and len(agg_files) >= 3:
-            print("\nDRY RUN OK — ready for full collection")
-            print("Run:  python scripts/fetch_binance.py --full")
-        else:
-            print(f"\nDRY RUN finished with {n_failed[0]} failures — check failed_symbols.txt")
-        return
-
-    # Full run
-    total = len(events)
-    print(f"\n--- FULL RUN ({total} events) ---")
-    for i, (_, row) in enumerate(events.iterrows(), 1):
-        collect_event(row, rl, n_failed)
-        if i % 10 == 0:
-            print(f"Progress: {i}/{total} | Failed: {n_failed[0]}")
-
-    print(f"\nDone. {total - n_failed[0]}/{total} events collected. "
-          f"Failed: {n_failed[0]} (see {FAILED_LOG})")
+    collect_aggtrades_loop(events, dry_run=dry_run)
 
 
 # ---------------------------------------------------------------------------

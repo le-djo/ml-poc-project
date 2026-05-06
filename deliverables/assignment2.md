@@ -153,22 +153,44 @@ Le notebook `notebooks/first_model.ipynb` détaille la comparaison. Résultats s
 
 ### Features manquantes — données non disponibles
 
-Les scripts `fetch_binance.py` et `fetch_coingecko.py` sont des stubs vides. Sans implémentation de la collecte de données :
-
 | Feature prévue | Raison de l'absence | Impact sur le modèle |
 |----------------|---------------------|----------------------|
-| `ret_5m`, `ret_15m`, `ret_60m` | Binance klines non collectées | Perd le signal de vélocité de prix avant le pump |
-| `vol_zscore_60m`, `vol_zscore_dynamic` | Binance klines non collectées | Features de détection volumique absentes |
-| `taker_buy_ratio_5m` | Binance aggTrades non collectés | Signal de pression acheteuse coordonnée absent |
-| `ofi_1m` | Binance carnet d'ordres non collecté | Signal OFI (le plus fort) absent |
-| `market_cap_rank` | CoinGecko non collecté | Contexte de vulnérabilité cross-sectionnel absent |
-| `circulating_supply_log` | CoinGecko non collecté | Proxy de liquidité structurelle absent |
+| `ret_5m`, `ret_15m`, `ret_60m`, `vol_zscore_60m`, `taker_buy_ratio_5m`, `rush_order_count` | ✅ Collectées via klines Binance REST (333 fichiers) | — |
+| `ofi_1m` (order flow imbalance exact) | ❌ aggTrades historiques **définitivement inaccessibles** — voir section ci-dessous | Perd le signal OFI le plus précis |
+| `market_cap_rank`, `circulating_supply_log` | CoinGecko non implémenté (`fetch_coingecko.py` vide) | Pas de contexte de vulnérabilité cross-sectionnel |
 
-### Conséquence
+### Limitation permanente — aggTrades historiques introuvables
 
-Le modèle actuel ne dispose que des features calculées par La Morgia sur les trades historiques (std_rush_order, avg_volume, std_price…). Ces features sont utiles mais **moins fines** que les features microstructure que nous aurions pu construire depuis les klines 1-min et aggTrades.
+#### Tentative 1 : Binance REST API `/aggTrades`
 
-Le Recall@LaMargia de ~3.5% à contamination=0.001 est faible en partie parce que plusieurs features critiques (OFI, taker_buy_ratio, vol_zscore_dynamic) sont absentes.
+Le endpoint REST ne conserve qu'une fenêtre glissante de quelques mois.
+Tous nos événements (2018–2021) sont hors de cette fenêtre → **0 lignes retournées** pour tous les symboles.
+
+#### Tentative 2 : data.binance.vision (archive officielle Binance)
+
+`data.binance.vision` propose des fichiers ZIP journaliers pour l'historique complet depuis 2017, sans clé API.
+URL : `https://data.binance.vision/data/spot/daily/aggTrades/{SYMBOL}/{SYMBOL}-{YYYY-MM-DD}.zip`
+
+Script mis à jour (`fetch_aggtrades_vision()` dans `scripts/fetch_binance.py`) pour télécharger les deux jours encadrant chaque événement (gestion du passage minuit UTC) et filtrer à la fenêtre [pump_ts − 10min, pump_ts).
+
+**Résultat : HTTP 404 pour la totalité des symboles testés**, toutes années confondues (2018, 2019, 2020, 2021).
+
+#### Cause racine
+
+`data.binance.vision` n'archive que les paires **actuellement listées** sur Binance.
+Or, les cibles de pump de La Morgia étaient précisément des tokens à faible capitalisation, souvent délistés par Binance dans les années suivantes (BRDBTC, BQXBTC, NXSBTC, NAVBTC, VIBBTC, STEEMBTC, etc.).
+Ces données de trades ont été définitivement supprimées de l'infrastructure Binance.
+
+#### Seule source disponible
+
+La Morgia et al. ont téléchargé les données de trades en 2020, pendant que les symboles étaient encore listés, via leur script `downloader.py` (CCXT + historique complet).
+Les features résultantes (`std_rush_order`, `avg_rush_order`, `std_trades`, `std_volume`) sont pré-calculées dans `labeled_features/features_15S.csv.gz` et constituent le **seul proxy disponible** pour les features de type OFI.
+
+#### Conséquence pour le modèle
+
+Le modèle s'appuie sur les features La Morgia (std_rush_order, avg_volume, std_price…) comme substituts des features de microstructure exactes.
+L'AUC = 0.998 (Isolation Forest) confirme que ces features sont suffisamment discriminantes malgré l'absence de OFI exact.
+Le faible Recall@LaMargia à contamination basse (0.001) reflète la rareté des pumps dans le dataset, pas un manque de signal.
 
 ---
 
