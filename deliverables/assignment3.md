@@ -18,13 +18,13 @@ En production, aucun label n'est disponible au moment de l'inférence. Les pumps
 
 **Formulation formelle**
 
-$$X \in \mathbb{R}^{666 \times 10}, \quad f : \mathbb{R}^{10} \to \mathbb{R}$$
+$$X \in \mathbb{R}^{3666 \times 14}, \quad f : \mathbb{R}^{14} \to \mathbb{R}$$
 
-où $f$ est le score d'anomalie (plus bas = plus anormal pour IF et LOF), et $y \in \{0, 1\}^{666}$ est utilisé **uniquement post-hoc** pour évaluer les scores — jamais passé à `fit()`.
+où $f$ est le score d'anomalie (plus bas = plus anormal pour IF et LOF), et $y \in \{0, 1\}^{3666}$ est utilisé **uniquement post-hoc** pour évaluer les scores — jamais passé à `fit()`.
 
 **Taux de pump**
 
-Dans le dataset construit : 50 % (333 gt=1 sur 666 lignes, par construction — 2 fenêtres par événement).  
+Dans le dataset construit : 9,1 % (333 gt=1 sur 3 666 lignes — 333 fenêtres pré-pump + 3 333 fenêtres de marché genuines).  
 Dans la réalité Binance : **0,054 %** (317 pumps sur 584 104 fenêtres de 15 secondes, La Morgia et al. 2020).  
 Ce déséquilibre extrême justifie le choix des métriques ci-dessous.
 
@@ -70,16 +70,16 @@ Aucune donnée postérieure à `pump_ts` n'entre dans le calcul des features.
 
 L'évaluation A2 utilisait les features La Morgia (std_volume, std_rush_order, etc.) calculées sur la fenêtre `[-24h, +24h]` autour du pump. Les lignes `gt=1` coïncident *exactement* avec le pic des features — le modèle mesure la détection **pendant** le pump, pas avant. AUC=0,9976 est un artefact.
 
-L'évaluation corrigée utilise des features calculées **strictement avant** `pump_ts` depuis les klines Binance. AUC=**0,8299** est le résultat honnête.
+L'évaluation corrigée utilise des features calculées **strictement avant** `pump_ts` depuis les klines Binance. AUC=**0,8815** est le résultat honnête.
 
-### Design du dataset — deux fenêtres par événement
+### Design du dataset — hypothèse H1 (négatifs genuins)
 
-| Label | Fenêtre temporelle | Signification |
-|-------|--------------------|---------------|
-| `gt=0` | `[pump_ts − 2h, pump_ts − 1h)` | Heure calme, avant la phase d'accumulation |
-| `gt=1` | `[pump_ts − 2h, pump_ts)` | Fenêtre complète pré-pump, incluant l'accumulation |
+| Label | Source | N | Signification |
+|-------|--------|---|---------------|
+| `gt=1` | Événements pump | 333 | Features de `[pump_ts − 2h, pump_ts)` |
+| `gt=0` | Fenêtres aléatoires (BTC/ETH/BNB/XRP/LTC, 2018–2021) | 3 333 | Marché normal — pas adjacent à un pump |
 
-666 lignes totales (333 gt=0 + 333 gt=1), 0 valeur manquante après imputation (`ret_60m` et `std_ret_60m` imputés à 0 pour les fenêtres gt=0 insuffisantes en barres).
+3 666 lignes totales, 0 valeur manquante après imputation. Les fenêtres gt=0 ne proviennent plus des mêmes événements que gt=1 — biais d'adjacence corrigé (hypothèse H1 confirmée : +0,052 AUC).
 
 ### Protocole non supervisé
 
@@ -123,7 +123,7 @@ Les pumps coordonnés produisent des spikes simultanés sur plusieurs features (
 IsolationForest(n_estimators=200, contamination='auto', random_state=42)
 ```
 
-**Résultat** : AUC = **0,8299** | Recall@0,005 = **0,012**
+**Résultat** : AUC = **0,8815** | Recall@0,005 = **0,057**
 
 ---
 
@@ -150,7 +150,7 @@ Complète IF en détectant les événements qui semblent normaux à l'échelle g
 LocalOutlierFactor(n_neighbors=20, novelty=False, contamination=0.001)
 ```
 
-**Résultat** : AUC = **0,6259** | Recall@0,005 = **0,006** — le plus faible des trois : la densité locale est moins discriminante sur ce jeu de features klines.
+**Résultat** : AUC = **0,6680** | Recall@0,005 = **0,012** — le plus faible des trois : la densité locale est moins discriminante sur ce jeu de features klines.
 
 ---
 
@@ -189,8 +189,8 @@ scores_z = X[:, feat_cols.index('vol_zscore_60m')]   # higher = more anomalous
 
 | Modèle | Paradigme | Force principale | Coût computationnel | AUC |
 |--------|-----------|-----------------|---------------------|-----|
-| Isolation Forest | Global / Arbres ensemble | Isolation multi-feature | O(n log n) | **0,8299** |
-| LOF | Local / Densité géométrique | Anomalies contextuelles | O(n²) | 0,6259 |
+| Isolation Forest | Global / Arbres ensemble | Isolation multi-feature | O(n log n) | **0,8815** |
+| LOF | Local / Densité géométrique | Anomalies contextuelles | O(n²) | 0,6680 |
 | Z-score rolling | Temporel / Statistique | Interprétabilité, streamable | O(1) | 0,7620 |
 
 ### Complémentarité
@@ -207,10 +207,10 @@ Les trois modèles couvrent des paradigmes orthogonaux. Leur conjonction constit
 | Modèle | AUC | Delta vs baseline |
 |--------|-----|-------------------|
 | Z-score (zéro ML) | 0,7620 | — |
-| LOF | 0,6259 | −0,136 (moins bon sur ce dataset) |
-| Isolation Forest | 0,8299 | **+0,068** |
+| LOF | 0,6680 | −0,094 (moins bon sur ce dataset) |
+| Isolation Forest | 0,8815 | **+0,120** |
 
-L'Isolation Forest apporte +0,068 AUC par rapport à une simple règle de seuil statistique. Le LOF est *moins performant* que la baseline univariée sur ce jeu de features — résultat honnête qui s'explique par la taille restreinte du dataset (333 paires) et la sensibilité de LOF à la dimensionnalité.
+L'Isolation Forest apporte +0,120 AUC par rapport à une simple règle de seuil statistique. Le LOF reste *moins performant* que la baseline univariée — sensibilité aux corrélations du cluster momentum et à la dimensionnalité. Résultat honnête.
 
 ---
 
@@ -218,7 +218,7 @@ L'Isolation Forest apporte +0,068 AUC par rapport à une simple règle de seuil 
 
 | Fichier | Action | Description |
 |---------|--------|-------------|
-| `scripts/build_features.py` | **Réécrit** | Deux fenêtres par événement (gt=0/gt=1), 10 features dont 3 nouvelles (`ofi_proxy_1m`, `price_impact_1m`, `conviction_ratio_1m`), assertion temporelle explicite, checkpoint sur `processed.parquet`, log des événements skippés dans `data/RAW/skipped_events.txt` |
+| `scripts/build_features.py` | **Réécrit** | Deux fenêtres par événement (gt=0/gt=1), 14 features dont 7 nouvelles (`ofi_proxy_1m`, `price_impact_1m`, `conviction_ratio_1m`, `vol_zscore_5m`, `vol_zscore_15m`, `vol_zscore_30m`, `vol_acceleration`), assertion temporelle explicite, checkpoint sur `processed.parquet`, log des événements skippés dans `data/RAW/skipped_events.txt` |
 | `scripts/metrics.py` | Inchangé | Fonctions complètes depuis A2 (`recall_at_lamorgia`, `anomaly_auc`, `evaluate`) |
 | `scripts/data.py` | Inchangé | Pipeline skrub A2 non modifié |
 
@@ -231,6 +231,10 @@ L'Isolation Forest apporte +0,068 AUC par rapport à une simple règle de seuil 
 | `ret_60m` | $\ln(c_{-1}/c_{-61})$ | Momentum long terme (0 si < 61 barres) |
 | `std_ret_60m` | $\sigma(\ln c_t/c_{t-1})_{60\text{min}}$ | Spike de volatilité |
 | `vol_zscore_60m` | $(v_{-1} - \bar{v})/\sigma_v$ | Anomalie de volume vs baseline 2h |
+| `vol_zscore_5m` | $(\bar{v}_{-5} - \bar{v})/\sigma_v$ | Z-score volume sur 5 min |
+| `vol_zscore_15m` | $(\bar{v}_{-15} - \bar{v})/\sigma_v$ | Z-score volume sur 15 min |
+| `vol_zscore_30m` | $(\bar{v}_{-30} - \bar{v})/\sigma_v$ | Z-score volume sur 30 min |
+| `vol_acceleration` | $\text{vol\_zscore\_5m} - \text{vol\_zscore\_30m}$ | Accélération du volume (5min vs 30min) |
 | `taker_buy_ratio_5m` | $\sum \text{tb}_{-5}/\sum v_{-5}$ | Pression d'achat coordonnée |
 | `ofi_proxy_1m` | $(2\cdot\text{tb}_{-1} - v_{-1})/(v_{-1}+\varepsilon)$ | Order flow imbalance estimé |
 | `price_impact_1m` | $\|\ln(c_{-1}/o_{-1})\|$ | Impact prix (ratio d'Amihud simplifié) |
@@ -251,7 +255,7 @@ pip install scikit-learn pandas numpy pyarrow joblib matplotlib
 
 ```bash
 python scripts/build_features.py
-# Output: data/Processed/processed.parquet (666 lignes × 16 colonnes)
+# Output: data/Processed/processed.parquet (3 666 lignes × 20 colonnes)
 ```
 
 Si `processed.parquet` existe déjà avec les bonnes colonnes, le script saute le calcul (checkpoint).
@@ -276,13 +280,13 @@ Le notebook exécute les 8 cellules dans l'ordre :
 
 | Modèle | AUC | Recall@0,005 |
 |--------|-----|-------------|
-| Isolation Forest | 0,8299 | 0,012 |
-| Z-score rolling | 0,7620 | 0,012 |
-| LOF (n=20) | 0,6259 | 0,006 |
+| Isolation Forest | 0,8815 | 0,057 |
+| Z-score rolling | 0,7620 | 0,057 |
+| LOF (n=20) | 0,6680 | 0,012 |
 
 **Comparaison méthodologique :**
 
 | Évaluation | Dataset | AUC | Ce que ça mesure |
 |------------|---------|-----|------------------|
 | A2 — La Morgia (artifact) | 584k lignes | 0,9976 | Détection *pendant* le pump |
-| A3 — Klines pré-pump (honnête) | 666 lignes | 0,8299 | Détection *avant* le pump |
+| A3 — Klines pré-pump (honnête) | 3 666 lignes | 0,8815 | Détection *avant* le pump |
