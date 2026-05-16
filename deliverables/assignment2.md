@@ -189,8 +189,74 @@ Les features résultantes (`std_rush_order`, `avg_rush_order`, `std_trades`, `st
 #### Conséquence pour le modèle
 
 Le modèle s'appuie sur les features La Morgia (std_rush_order, avg_volume, std_price…) comme substituts des features de microstructure exactes.
-L'AUC = 0.998 (Isolation Forest) confirme que ces features sont suffisamment discriminantes malgré l'absence de OFI exact.
+L'AUC = 0.998 (Isolation Forest) reflète la forte séparabilité des features La Morgia (voir audit ci-dessous).
 Le faible Recall@LaMargia à contamination basse (0.001) reflète la rareté des pumps dans le dataset, pas un manque de signal.
+
+---
+
+## Audit forensique — Pourquoi AUC = 0.9976 ?
+
+### Protocole d'audit (5 étapes)
+
+Suite à la valeur suspicieusement élevée de l'AUC (0.9976 pour un modèle non supervisé), un audit complet a été conduit pour en identifier la cause racine.
+
+### Étape 1 — Séparabilité univariée des features
+
+| Feature | Moyenne (pump) | Moyenne (normal) | Ratio de séparation |
+|---------|---------------|-----------------|---------------------|
+| `std_volume` | 2.77 | −0.000 | **145.5×** |
+| `std_trades` | 1.44 | −0.000 | 132.9× |
+| `std_rush_order` | 0.72 | −0.000 | 99.5× |
+
+Au seuil du 99ème percentile des normaux, un simple seuil sur `std_volume` capture **93%** des pumps avec un taux de faux positifs de 0.95%. **La séparation est triviale par une seule feature.**
+
+### Étape 2 — Origine du problème : conception de la fenêtre La Morgia
+
+En lisant `data/RAW/la_morgia_raw/features.py`, on découvre que les features sont calculées sur une fenêtre **[−24h, +24h]** autour du pump_ts. Les lignes `gt=1` correspondent exactement aux intervalles de 15 secondes **pendant** le pump — c'est-à-dire au moment où les volumes et prix sont à leur maximum.
+
+Autrement dit : les features encodent "le pump est en train de se produire maintenant", pas "un pump est sur le point de se produire". L'évaluation mesure la capacité du modèle à reconnaître un événement *en cours*, pas à le *prédire*.
+
+### Étape 3 — Confirmation par Z-score univarié
+
+```
+Z-score (std_volume seul, zéro ML)  →  AUC = 0.9947
+Isolation Forest (200 arbres)       →  AUC = 0.9976
+```
+
+Un seuil statistique sur une seule colonne atteint presque le même AUC que le modèle d'ensemble complet. L'apport marginal du ML multivarié est de 0.003.
+
+### Étape 4 — Test d'absence de fuite d'entraînement
+
+| Protocole | AUC |
+|-----------|-----|
+| IF entraîné sur **toutes** les données (original) | 0.9976 |
+| IF entraîné sur **gt==0 uniquement** (protocole propre) | **0.9989** |
+
+La différence est de **0.0012** — négligeable. Inclure les pumps dans l'entraînement ne donne aucun avantage. Il n'y a **pas de fuite due à l'entraînement**.
+
+### Étape 5 — Généralisation temporelle
+
+Split temporel strict : entraînement 2018-2019, test 2020-2021 (hors-échantillon complet).
+
+| Évaluation | AUC |
+|------------|-----|
+| In-sample (notebook original) | 0.9976 |
+| Out-of-time (train 2018-2019, test 2020-2021) | **0.9987** |
+
+L'AUC est stable voire légèrement supérieure hors-temps. La séparation des features est un phénomène structurel constant sur toutes les années.
+
+### Conclusion de l'audit
+
+**Cause racine : séparabilité triviale des features, pas une fuite de modèle.**
+
+| Question | Réponse |
+|----------|---------|
+| L'AUC est-il gonflé par du leakage d'entraînement ? | **Non** — delta IF full vs IF clean = 0.0012 |
+| L'AUC est-il généraliste (hors-temps) ? | **Oui** — AUC temporel = 0.9987 |
+| L'AUC reflète-t-il une vraie capacité de prédiction ? | **Partiellement** — il mesure la détection *pendant* le pump, pas *avant* |
+| Le problème est-il intrinsèquement difficile ? | **Non** — la séparabilité univariée est de 145× sur std_volume |
+
+**Implication pour le déploiement** : un modèle de surveillance réelle devrait prédire un pump *avant* qu'il atteigne son pic. L'évaluation sur le dataset La Morgia (qui labellise les fenêtres *pendant* le pump) surestime la difficulté du problème et crée une illusion de haute performance. Le vrai challenge — détecter la phase d'accumulation pré-pump — reste non évalué.
 
 ---
 
