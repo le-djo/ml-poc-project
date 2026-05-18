@@ -201,7 +201,7 @@ assert int(pre["open_time"].max()) < window_end_ms
 
 **Solution :** collecte de **3 000 fenêtres de marché aléatoires** via l'API Binance publique sur 5 coins liquides (BTCUSDT, ETHUSDT, BNBUSDT, XRPUSDT, LTCUSDT), période 2018-2021, dates tirées au hasard. Ces fenêtres représentent un marché genuinement normal. Score moyen = +0,101 — clairement séparé des pumps.
 
-**Résultat :** AUC 0,8299 → **0,8815** (+0,052), Recall@0,005 : 0,012 → **0,057** (×4,75). La séparation est réelle.
+**Résultat :** AUC 0,8299 → **0,881** (+0,052), Recall@0,005 : 0,012 → **0,057** (×4,75). La séparation est réelle.
 
 ### 5.3 L'échec des données contextuelles
 
@@ -233,7 +233,7 @@ assert int(pre["open_time"].max()) < window_end_ms
 - Boîte noire — ne produit pas d'explication par feature sans SHAP
 - Ne capte pas les anomalies *contextuelles* (normales globalement, anormales localement)
 
-**Résultat :** AUC=0,8815 | Recall@c=0,001 : 0,012 | Recall@c=0,005 : 0,057 | Recall@c=0,05 : 0,387
+**Résultat :** AUC=0,881 | Recall@c=0,001 : 0,012 | Recall@c=0,005 : 0,057 | Recall@c=0,05 : 0,387
 
 ### Local Outlier Factor (AUC = 0,710)
 
@@ -250,7 +250,7 @@ assert int(pre["open_time"].max()) < window_end_ms
 - `novelty=False` : ne peut pas scorer de nouvelles observations post-entraînement — ne se sauvegarde pas en joblib pour déploiement
 - Recall@c=0,005 = 0,012 vs 0,057 pour l'IF
 
-**Résultat :** AUC=0,7103 | Recall@c=0,001 : 0,009 | Recall@c=0,005 : 0,012 | Recall@c=0,05 : 0,159
+**Résultat :** AUC=0,710 | Recall@c=0,001 : 0,009 | Recall@c=0,005 : 0,012 | Recall@c=0,05 : 0,159
 
 ### Z-score rolling (AUC = 0,766)
 
@@ -268,7 +268,7 @@ assert int(pre["open_time"].max()) < window_end_ms
 - Ignore les 13 autres features (OFI, taker ratio, momentum)
 - Aveugle aux pumps dont le signal s'exprime sur le momentum prix ou la microstructure plutôt que sur le volume brut
 
-**Résultat :** AUC=0,7660 | Recall@c=0,001 : 0,012 | Recall@c=0,005 : 0,057 | Recall@c=0,05 : 0,345
+**Résultat :** AUC=0,766 | Recall@c=0,001 : 0,012 | Recall@c=0,005 : 0,057 | Recall@c=0,05 : 0,345
 
 ### Pourquoi l'Isolation Forest gagne
 
@@ -284,9 +284,9 @@ La structure de corrélation des features explique directement la hiérarchie de
 |---|---|---|---|---|
 | La Morgia features (A2) | 584k lignes | 0,9976 | ~100% | ❌ Artefact — features calculées pendant le pump |
 | Klines pré-pump, baseline initiale | 666 lignes | 0,8299 | 0,012 | ⚠️ Baseline gt=0 biaisée (même événements) |
-| **H1 final (IF)** | **3 666 lignes** | **0,8815** | **0,057** | ✅ Honnête |
-| H1 final (LOF) | 3 666 lignes | 0,7103 | 0,012 | ✅ Honnête |
-| H1 final (Z-score) | 3 666 lignes | 0,7660 | 0,057 | ✅ Honnête |
+| **H1 final (IF)** | **3 666 lignes** | **0,881** | **0,057** | ✅ Honnête |
+| H1 final (LOF) | 3 666 lignes | 0,710 | 0,012 | ✅ Honnête |
+| H1 final (Z-score) | 3 666 lignes | 0,766 | 0,057 | ✅ Honnête |
 
 ### Tableau de sensibilité à la contamination (modèle IF)
 

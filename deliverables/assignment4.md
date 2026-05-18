@@ -78,7 +78,7 @@ Deux clusters distincts émergent :
 `vol_zscore_60m`, `ofi_proxy_1m`, `taker_buy_ratio_5m`, `conviction_ratio_1m` et `rush_order_count` présentent des corrélations faibles à modérées entre eux et avec le cluster 1. Ce sont des features orthogonales apportant un signal indépendant.
 
 ### Pertinence
-La forte corrélation interne du cluster 1 explique partiellement la sous-performance du LOF (AUC=0,626) : les distances dans $\mathbb{R}^{10}$ sont dominées par les 5 features corrélées de momentum, compressant artificiellement les voisinages. L'Isolation Forest, qui partitionne chaque feature indépendamment, est immunisé contre cet effet — ce qui justifie son AUC supérieur (0,830).
+La forte corrélation interne du cluster 1 explique partiellement la sous-performance du LOF (AUC=0,710) : les distances dans $\mathbb{R}^{10}$ sont dominées par les 5 features corrélées de momentum, compressant artificiellement les voisinages. L'Isolation Forest, qui partitionne chaque feature indépendamment, est immunisé contre cet effet — ce qui justifie son AUC supérieur (0,881).
 
 ---
 
@@ -94,14 +94,14 @@ Violin plot par modèle, deux violons côte à côte (gt=0 en bleu, gt=1 en roug
 
 ### Interprétation
 
-**Isolation Forest :** gt=0 concentré autour de −0,10 (distribution étroite), gt=1 étalé vers les valeurs positives avec une queue haute visible. Séparation partielle : les événements à signal fort (DUSK-like) s'isolent clairement, les événements faibles se mélangent avec le contrôle. Cohérent avec AUC=0,830.
+**Isolation Forest :** gt=0 concentré autour de −0,10 (distribution étroite), gt=1 étalé vers les valeurs positives avec une queue haute visible. Séparation partielle : les événements à signal fort (DUSK-like) s'isolent clairement, les événements faibles se mélangent avec le contrôle. Cohérent avec AUC=0,881.
 
-**LOF :** distributions fortement chevauchantes sur toute la plage (≈1,0 à 4,5+). Le LOF n'arrive pas à distinguer les deux classes — les voisinages locaux sont perturbés par la multicollinéarité du cluster de momentum. Cohérent avec AUC=0,626.
+**LOF :** distributions fortement chevauchantes sur toute la plage (≈1,0 à 4,5+). Le LOF n'arrive pas à distinguer les deux classes — les voisinages locaux sont perturbés par la multicollinéarité du cluster de momentum. Cohérent avec AUC=0,710.
 
-**Z-score (vol_zscore_60m) :** gt=0 très concentré autour de 0 (distribution étroite — le volume pré-pump de la fenêtre calme est dans sa propre norme), gt=1 très étalé de 0 à +7 avec structure bimodale. La bimodalité reflète exactement les deux types d'événements vus dans fig_raw_klines : pumps avec accumulation préalable (queue haute) et pumps sans signal pré-pump (pic à 0). Cohérent avec AUC=0,762.
+**Z-score (vol_zscore_60m) :** gt=0 très concentré autour de 0 (distribution étroite — le volume pré-pump de la fenêtre calme est dans sa propre norme), gt=1 très étalé de 0 à +7 avec structure bimodale. La bimodalité reflète exactement les deux types d'événements vus dans fig_raw_klines : pumps avec accumulation préalable (queue haute) et pumps sans signal pré-pump (pic à 0). Cohérent avec AUC=0,766.
 
 ### Pertinence
-La figure explique directement l'ordre AUC : IF (0,830) > Z-score (0,762) > LOF (0,626). L'IF bénéficie des 10 dimensions pour isoler les événements ; le Z-score, univarié, capture les cas extrêmes ; le LOF perd de l'information à cause de la structure de corrélation.
+La figure explique directement l'ordre AUC : IF (0,881) > Z-score (0,766) > LOF (0,710). L'IF bénéficie des 10 dimensions pour isoler les événements ; le Z-score, univarié, capture les cas extrêmes ; le LOF perd de l'information à cause de la structure de corrélation.
 
 ---
 
@@ -117,11 +117,11 @@ Courbes ROC superposées sur les mêmes axes, diagonale en pointillés (baseline
 
 ### Interprétation
 
-**IF (AUC=0,830) :** monte rapidement vers le coin supérieur gauche aux faibles FPR — à 5 % de faux positifs, l'IF capture déjà ~60 % des vrais pumps. C'est le comportement souhaité pour une alerte à haute précision.
+**IF (AUC=0,881) :** monte rapidement vers le coin supérieur gauche aux faibles FPR — à 5 % de faux positifs, l'IF capture déjà ~60 % des vrais pumps. C'est le comportement souhaité pour une alerte à haute précision.
 
-**Z-score (AUC=0,762) :** progression plus régulière, intermédiaire sur tout le spectre. Meilleur que LOF sur tous les seuils, mais gagnant en recall aux hauts FPR grâce aux événements à vol_zscore extrême.
+**Z-score (AUC=0,766) :** progression plus régulière, intermédiaire sur tout le spectre. Meilleur que LOF sur tous les seuils, mais gagnant en recall aux hauts FPR grâce aux événements à vol_zscore extrême.
 
-**LOF (AUC=0,626) :** courbe proche de la diagonale — le modèle est à peine au-dessus du hasard. La géométrie locale dans $\mathbb{R}^{10}$ n'est pas discriminante sur ce feature set à 666 observations.
+**LOF (AUC=0,710) :** courbe proche de la diagonale — le modèle est à peine au-dessus du hasard. La géométrie locale dans $\mathbb{R}^{10}$ n'est pas discriminante sur ce feature set à 3 666 observations.
 
 ### Pertinence
 Justifie le choix de l'Isolation Forest comme modèle recommandé pour un déploiement Kaiko : meilleur AUC et comportement favorable aux faibles contaminations, là où une alerte de surveillance doit être précise.

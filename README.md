@@ -12,7 +12,7 @@ Unsupervised anomaly detection system for identifying pump-and-dump manipulation
 | Z-score (vol_zscore_60m) | 0.766 | 0.057 |
 | LOF (n=20) | 0.710 | 0.012 |
 
-Key finding: baseline gt=0 was biased (pump-adjacent windows ≈ pump windows). Adding 3000 genuine market windows via Binance REST API improved AUC from 0.8299 → 0.8815, Recall ×4.75.
+Key finding: baseline gt=0 was biased (pump-adjacent windows ≈ pump windows). Adding 3000 genuine market windows via Binance REST API improved AUC from 0.8299 → 0.881, Recall ×4.75.
 
 ---
 
@@ -52,11 +52,7 @@ Output: `data/RAW/klines/` — 333 parquet files.
 
 ### 4. Collect normal market windows (required for H1 baseline)
 
-Fetches 3000 random 2h windows from BTCUSDT/ETHUSDT/BNBUSDT/XRPUSDT/LTCUSDT (2018-2021). Takes ~10 minutes. Checkpointed.
-
-```bash
-python scripts/fetch_normal_windows.py
-```
+Normal market window collection is integrated into `scripts/fetch_binance.py` — the same script handles both pump event klines (step 3) and the 3000 random control windows. No separate script needed.
 
 Output: `data/RAW/normal_windows/` — 30 chunk parquet files.
 
@@ -95,8 +91,7 @@ ml-poc-project/
 ├── app.py                    # Streamlit app (6 pages)
 ├── scripts/
 │   ├── main.py               # Entry point: python scripts/main.py
-│   ├── fetch_binance.py      # Collect pump event klines
-│   ├── fetch_normal_windows.py # Collect normal market windows (H1)
+│   ├── fetch_binance.py      # Collect pump event klines + normal windows (H1)
 │   ├── build_features.py     # Feature engineering pipeline
 │   ├── metrics.py            # recall_at_lamorgia(), anomaly_auc()
 │   └── data.py               # La Morgia feature pipeline (A2)

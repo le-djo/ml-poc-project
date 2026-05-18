@@ -70,7 +70,7 @@ Aucune donnée postérieure à `pump_ts` n'entre dans le calcul des features.
 
 L'évaluation A2 utilisait les features La Morgia (std_volume, std_rush_order, etc.) calculées sur la fenêtre `[-24h, +24h]` autour du pump. Les lignes `gt=1` coïncident *exactement* avec le pic des features — le modèle mesure la détection **pendant** le pump, pas avant. AUC=0,9976 est un artefact.
 
-L'évaluation corrigée utilise des features calculées **strictement avant** `pump_ts` depuis les klines Binance. AUC=**0,8815** est le résultat honnête.
+L'évaluation corrigée utilise des features calculées **strictement avant** `pump_ts` depuis les klines Binance. AUC=**0,881** est le résultat honnête.
 
 ### Design du dataset — hypothèse H1 (négatifs genuins)
 
@@ -123,7 +123,7 @@ Les pumps coordonnés produisent des spikes simultanés sur plusieurs features (
 IsolationForest(n_estimators=200, contamination='auto', random_state=42)
 ```
 
-**Résultat** : AUC = **0,8815** | Recall@0,005 = **0,057**
+**Résultat** : AUC = **0,881** | Recall@0,005 = **0,057**
 
 ---
 
@@ -150,7 +150,7 @@ Complète IF en détectant les événements qui semblent normaux à l'échelle g
 LocalOutlierFactor(n_neighbors=20, novelty=False, contamination=0.001)
 ```
 
-**Résultat** : AUC = **0,6680** | Recall@0,005 = **0,012** — le plus faible des trois : la densité locale est moins discriminante sur ce jeu de features klines.
+**Résultat** : AUC = **0,710** | Recall@0,005 = **0,012** — le plus faible des trois : la densité locale est moins discriminante sur ce jeu de features klines.
 
 ---
 
@@ -179,7 +179,7 @@ Baseline naturelle déployable dans un Market Surveyor sans pipeline ML. Permet 
 scores_z = X[:, feat_cols.index('vol_zscore_60m')]   # higher = more anomalous
 ```
 
-**Résultat** : AUC = **0,7620** | Recall@0,005 = **0,012**
+**Résultat** : AUC = **0,766** | Recall@0,005 = **0,057**
 
 ---
 
@@ -189,9 +189,9 @@ scores_z = X[:, feat_cols.index('vol_zscore_60m')]   # higher = more anomalous
 
 | Modèle | Paradigme | Force principale | Coût computationnel | AUC |
 |--------|-----------|-----------------|---------------------|-----|
-| Isolation Forest | Global / Arbres ensemble | Isolation multi-feature | O(n log n) | **0,8815** |
-| LOF | Local / Densité géométrique | Anomalies contextuelles | O(n²) | 0,6680 |
-| Z-score rolling | Temporel / Statistique | Interprétabilité, streamable | O(1) | 0,7620 |
+| Isolation Forest | Global / Arbres ensemble | Isolation multi-feature | O(n log n) | **0,881** |
+| LOF | Local / Densité géométrique | Anomalies contextuelles | O(n²) | 0,710 |
+| Z-score rolling | Temporel / Statistique | Interprétabilité, streamable | O(1) | 0,766 |
 
 ### Complémentarité
 
@@ -206,9 +206,9 @@ Les trois modèles couvrent des paradigmes orthogonaux. Leur conjonction constit
 
 | Modèle | AUC | Delta vs baseline |
 |--------|-----|-------------------|
-| Z-score (zéro ML) | 0,7620 | — |
-| LOF | 0,6680 | −0,094 (moins bon sur ce dataset) |
-| Isolation Forest | 0,8815 | **+0,120** |
+| Z-score (zéro ML) | 0,766 | — |
+| LOF | 0,710 | −0,094 (moins bon sur ce dataset) |
+| Isolation Forest | 0,881 | **+0,120** |
 
 L'Isolation Forest apporte +0,120 AUC par rapport à une simple règle de seuil statistique. Le LOF reste *moins performant* que la baseline univariée — sensibilité aux corrélations du cluster momentum et à la dimensionnalité. Résultat honnête.
 
@@ -280,13 +280,13 @@ Le notebook exécute les 8 cellules dans l'ordre :
 
 | Modèle | AUC | Recall@0,005 |
 |--------|-----|-------------|
-| Isolation Forest | 0,8815 | 0,057 |
-| Z-score rolling | 0,7620 | 0,057 |
-| LOF (n=20) | 0,6680 | 0,012 |
+| Isolation Forest | 0,881 | 0,057 |
+| Z-score rolling | 0,766 | 0,057 |
+| LOF (n=20) | 0,710 | 0,012 |
 
 **Comparaison méthodologique :**
 
 | Évaluation | Dataset | AUC | Ce que ça mesure |
 |------------|---------|-----|------------------|
 | A2 — La Morgia (artifact) | 584k lignes | 0,9976 | Détection *pendant* le pump |
-| A3 — Klines pré-pump (honnête) | 3 666 lignes | 0,8815 | Détection *avant* le pump |
+| A3 — Klines pré-pump (honnête) | 3 666 lignes | 0,881 | Détection *avant* le pump |
