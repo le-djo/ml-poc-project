@@ -324,105 +324,94 @@ elif page == "🔍 Démo live":
 
     pump_stats = load_pump_stats()
 
-    event_choice  = st.selectbox("Événement à analyser", options=list(KNOWN_EVENTS.keys()))
+    # Read event choice from session_state (persisted by the selectbox rendered below)
+    _evt_options  = list(KNOWN_EVENTS.keys())
+    event_choice  = st.session_state.get("_demo_event", _evt_options[0])
     event_val     = KNOWN_EVENTS[event_choice]
     is_known_pump = (event_val is not None) and (len(event_val) > 2)
 
-    # Reset state when the selection changes
+    # Reset state when selection changes
     if st.session_state.get("_last_event") != event_choice:
         st.session_state["scored"] = False
         st.session_state["reveal"] = False
         st.session_state["_last_event"] = event_choice
 
-    if event_val is None:
-        ci1, ci2 = st.columns(2)
-        with ci1:
-            symbol = st.selectbox("Symbole Binance", [
-                "BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "LTCUSDT",
-                "SOLUSDT", "ADAUSDT", "DOTUSDT", "MATICUSDT", "LINKUSDT",
-                "XRPBTC", "ETHBTC", "BNBBTC", "LTCBTC",
-            ])
-        with ci2:
-            date = st.date_input("Date", value=datetime(2021, 6, 1))
-    else:
+    # Resolve symbol/date for button handler (uses session_state for custom mode)
+    if event_val is not None:
         symbol = event_val[0]
         date   = datetime.strptime(event_val[1], "%Y-%m-%d").date()
-        if len(event_val) > 2:
-            _pts = pd.Timestamp(event_val[2], tz="UTC")
-            _sdt = _pts - pd.Timedelta(hours=2)
-            st.caption(
-                f"Symbole : **{symbol}** — "
-                f"Fenêtre : **{_sdt.strftime('%H:%M')} – {_pts.strftime('%H:%M')} UTC** ({date})"
-            )
-        else:
-            st.caption(f"Symbole : **{symbol}** — Date : **{date}** (fenêtre midi UTC)")
+    else:
+        symbol = st.session_state.get("_custom_symbol", "BTCUSDT")
+        date   = st.session_state.get("_custom_date", datetime(2021, 6, 1).date())
 
-    if st.button("🔍 Analyser"):
-        st.session_state["reveal"] = False
-        if event_val is not None and len(event_val) > 2:
-            _pump_ts_ms = int(pd.Timestamp(event_val[2], tz="UTC").timestamp() * 1000)
-            start_ms    = _pump_ts_ms - 2 * 3600 * 1000
-        else:
-            _pump_ts_ms = None
-            start_ms    = int(datetime(date.year, date.month, date.day, 12, 0).timestamp() * 1000)
+    # ── Analyser button (disappears once score is shown) ───────────────────
+    if not st.session_state.get("scored"):
+        if st.button("🔍 Analyser"):
+            st.session_state["reveal"] = False
+            if event_val is not None and len(event_val) > 2:
+                _pump_ts_ms = int(pd.Timestamp(event_val[2], tz="UTC").timestamp() * 1000)
+                start_ms    = _pump_ts_ms - 2 * 3600 * 1000
+            else:
+                _pump_ts_ms = None
+                start_ms    = int(datetime(date.year, date.month, date.day, 12, 0).timestamp() * 1000)
 
-        with st.spinner("Récupération des klines Binance..."):
-            try:
-                resp = requests.get(
-                    "https://api.binance.com/api/v3/klines",
-                    params={"symbol": symbol.upper(), "interval": "1m",
-                            "startTime": start_ms, "limit": 120},
-                    timeout=10,
-                )
-                resp.raise_for_status()
-                raw = resp.json()
-            except Exception as e:
-                st.error(f"Erreur API Binance : {e}")
+            with st.spinner("Récupération des klines Binance..."):
+                try:
+                    resp = requests.get(
+                        "https://api.binance.com/api/v3/klines",
+                        params={"symbol": symbol.upper(), "interval": "1m",
+                                "startTime": start_ms, "limit": 120},
+                        timeout=10,
+                    )
+                    resp.raise_for_status()
+                    raw = resp.json()
+                except Exception as e:
+                    st.error(f"Erreur API Binance : {e}")
+                    st.stop()
+
+            if not isinstance(raw, list) or len(raw) < 30:
+                st.error("Données insuffisantes pour ce symbole/date (< 30 barres retournées). "
+                         "Ce coin est peut-être délisté sur Binance.")
                 st.stop()
 
-        if not isinstance(raw, list) or len(raw) < 30:
-            st.error("Données insuffisantes pour ce symbole/date (< 30 barres retournées). "
-                     "Ce coin est peut-être délisté sur Binance.")
-            st.stop()
+            klines = pd.DataFrame(raw, columns=[
+                "open_time", "open", "high", "low", "close", "volume",
+                "close_time", "quote_asset_vol", "num_trades",
+                "taker_buy_base", "taker_buy_quote", "ignore",
+            ])
+            for _c in ["open_time", "close_time"]:
+                klines[_c] = klines[_c].astype(np.int64)
+            for _c in ["open", "high", "low", "close", "volume",
+                       "taker_buy_base", "taker_buy_quote", "quote_asset_vol"]:
+                klines[_c] = klines[_c].astype(float)
+            klines["num_trades"] = klines["num_trades"].astype(int)
 
-        klines = pd.DataFrame(raw, columns=[
-            "open_time", "open", "high", "low", "close", "volume",
-            "close_time", "quote_asset_vol", "num_trades",
-            "taker_buy_base", "taker_buy_quote", "ignore",
-        ])
-        for _c in ["open_time", "close_time"]:
-            klines[_c] = klines[_c].astype(np.int64)
-        for _c in ["open", "high", "low", "close", "volume",
-                   "taker_buy_base", "taker_buy_quote", "quote_asset_vol"]:
-            klines[_c] = klines[_c].astype(float)
-        klines["num_trades"] = klines["num_trades"].astype(int)
+            window_end_ms = _pump_ts_ms if _pump_ts_ms is not None else int(klines["open_time"].max()) + 60_000
+            feats = compute_features(klines, window_end_ms)
 
-        window_end_ms = _pump_ts_ms if _pump_ts_ms is not None else int(klines["open_time"].max()) + 60_000
-        feats = compute_features(klines, window_end_ms)
+            if feats is None:
+                st.error("Données insuffisantes (compute_features a retourné None — < 30 barres valides).")
+                st.stop()
 
-        if feats is None:
-            st.error("Données insuffisantes (compute_features a retourné None — < 30 barres valides).")
-            st.stop()
+            try:
+                scaler, model = load_models()
+            except FileNotFoundError:
+                st.error("Modèles introuvables dans models/. Exécutez d'abord notebooks/02_modeling.ipynb.")
+                st.stop()
 
-        try:
-            scaler, model = load_models()
-        except FileNotFoundError:
-            st.error("Modèles introuvables dans models/. Exécutez d'abord notebooks/02_modeling.ipynb.")
-            st.stop()
+            feat_vec    = np.array([[feats[c] for c in FEAT_COLS]], dtype=float)
+            feat_scaled = scaler.transform(feat_vec)
+            raw_score   = float(model.decision_function(feat_scaled)[0])
 
-        feat_vec    = np.array([[feats[c] for c in FEAT_COLS]], dtype=float)
-        feat_scaled = scaler.transform(feat_vec)
-        raw_score   = float(model.decision_function(feat_scaled)[0])
+            st.session_state["scored"]         = True
+            st.session_state["_klines"]        = klines
+            st.session_state["_feats"]         = feats
+            st.session_state["_anomaly_score"] = -raw_score
+            st.session_state["_window_end_ms"] = window_end_ms
+            st.session_state["_is_known_pump"] = is_known_pump
+            st.session_state["_scored_symbol"] = symbol.upper()
 
-        st.session_state["scored"]         = True
-        st.session_state["_klines"]        = klines
-        st.session_state["_feats"]         = feats
-        st.session_state["_anomaly_score"] = -raw_score
-        st.session_state["_window_end_ms"] = window_end_ms
-        st.session_state["_is_known_pump"] = is_known_pump
-        st.session_state["_scored_symbol"] = symbol.upper()
-
-    # ── Display results (persists across reruns via session_state) ─────────────
+    # ── Score badge (shown after scoring) ──────────────────────────────────
     if st.session_state.get("scored"):
         klines        = st.session_state["_klines"]
         feats         = st.session_state["_feats"]
@@ -430,6 +419,10 @@ elif page == "🔍 Démo live":
         window_end_ms = st.session_state["_window_end_ms"]
         is_known_pump = st.session_state["_is_known_pump"]
         scored_symbol = st.session_state["_scored_symbol"]
+
+        # Recompute feat_scaled for SHAP (load_models is cached, transform is instant)
+        _feat_vec   = np.array([[feats[c] for c in FEAT_COLS]], dtype=float)
+        feat_scaled = load_models()[0].transform(_feat_vec)
 
         if anomaly_score > 0:
             st.error(f"🔴 ANOMALIE DÉTECTÉE — score : {anomaly_score:.4f}")
@@ -443,14 +436,48 @@ elif page == "🔍 Démo live":
             "et positif pour les anomalies (isolées en peu de coupures)."
         )
 
-        if is_known_pump and anomaly_score <= 0:
-            st.info(
-                "ℹ️ **Résultat attendu pour ce pump** — Le modèle analyse la fenêtre PRÉ-pump "
-                "(2h avant l'annonce Telegram). "
-                "Ce pump n'a pas laissé de signal d'accumulation détectable dans les klines 1-min avant l'annonce. "
-                "La figure ci-dessous le confirme : le spike de volume est post-annonce (à droite de la ligne rouge). "
-                "C'est la limite structurelle documentée dans **Limites & Perspectives**."
-            )
+    # ── Event selector (always visible, below score badge) ─────────────────
+    st.selectbox("Événement à analyser", options=_evt_options,
+                 index=_evt_options.index(event_choice), key="_demo_event")
+
+    # Caption / custom inputs for the selected event
+    if event_val is not None and len(event_val) > 2:
+        _pts = pd.Timestamp(event_val[2], tz="UTC")
+        _sdt = _pts - pd.Timedelta(hours=2)
+        st.caption(
+            f"Symbole : **{symbol}** — "
+            f"Fenêtre : **{_sdt.strftime('%H:%M')} – {_pts.strftime('%H:%M')} UTC**"
+        )
+    elif event_val is not None:
+        st.caption(f"Symbole : **{symbol}** — Date : fenêtre midi UTC")
+    else:
+        _ci1, _ci2 = st.columns(2)
+        with _ci1:
+            st.selectbox("Symbole Binance", [
+                "BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "LTCUSDT",
+                "SOLUSDT", "ADAUSDT", "DOTUSDT", "MATICUSDT", "LINKUSDT",
+                "XRPBTC", "ETHBTC", "BNBBTC", "LTCBTC",
+            ], key="_custom_symbol")
+        with _ci2:
+            st.date_input("Date", value=datetime(2021, 6, 1), key="_custom_date")
+
+    # ── Results (persists via session_state) ────────────────────────────────
+    if st.session_state.get("scored"):
+
+        # ℹ️ Details expander — replaces BOX A and BOX B (visible for all events)
+        with st.expander("ℹ️ Détails de l'analyse", expanded=False):
+            st.markdown("""
+**Fenêtre analysée :** 120 minutes de klines Binance (1-min) strictement avant pump_ts
+**Features calculées :** 14 features de microstructure (prix, volume, order flow)
+**Référence :** comparé à 3 333 fenêtres de marché normal (BTC/ETH/BNB/XRP/LTC, 2018-2021)
+
+---
+
+**Note méthodologique :** Le modèle analyse uniquement la fenêtre PRÉ-pump.
+Pour les pumps sans signal d'accumulation pré-annonce, un score NORMAL est attendu —
+le spike de volume survient après l'annonce Telegram (visible à droite de la ligne rouge).
+Cette limite est documentée dans **Limites & Perspectives**.
+""")
 
         pump_ts_dt  = pd.to_datetime(window_end_ms, unit="ms", utc=True)
         pump_ts_str = pump_ts_dt.strftime("%H:%M UTC")
@@ -473,23 +500,19 @@ elif page == "🔍 Démo live":
         st.plotly_chart(fig_vol, use_container_width=True)
 
         n_rows = len(klines)
-        st.info(
-            f"Analyse : {n_rows} minutes de klines Binance | 14 features calculées | "
-            "comparé à 3 333 fenêtres de marché normal (BTC/ETH/BNB/XRP/LTC, 2018-2021)."
-        )
 
-        # Volume trend (change 2C)
+        # Volume trend
         if n_rows >= 60:
             first_50_mean = klines["volume"].iloc[:50].mean()
             last_10_mean  = klines["volume"].iloc[-10:].mean()
             ratio = last_10_mean / (first_50_mean + 1e-9)
             if ratio > 3:
-                st.warning(f"📈 Volume en hausse dans les 10 dernières minutes "
+                st.warning(f"Analyse : Volume en hausse dans les 10 dernières minutes "
                            f"(×{ratio:.1f} vs début de fenêtre) — signal d'accumulation visible.")
             elif ratio > 1.5:
-                st.info(f"📊 Légère hausse de volume en fin de fenêtre (×{ratio:.1f}) — signal faible.")
+                st.info(f"Analyse : Légère hausse de volume en fin de fenêtre (×{ratio:.1f}) — signal faible.")
             else:
-                st.success(f"📉 Volume stable sur toute la fenêtre (×{ratio:.1f}) — "
+                st.success(f"Analyse : Volume stable sur toute la fenêtre (×{ratio:.1f}) — "
                            "pas d'accumulation détectable.")
 
         # ── Feature 1 : Reveal post-pump ──────────────────────────────────────
@@ -545,7 +568,7 @@ elif page == "🔍 Démo live":
                 ))
                 fig_rev.add_trace(go.Scatter(
                     x=ts_all[mask_post], y=sell_ratio_post * max_vol,
-                    name="Pression vendeuse proxy (1−taker_buy_ratio)",
+                    name="Pression vendeuse estimée",
                     mode="lines", line=dict(color="orange", width=2),
                 ))
                 fig_rev.add_shape(type="line",
@@ -563,8 +586,9 @@ elif page == "🔍 Démo live":
                 )
                 st.plotly_chart(fig_rev, use_container_width=True)
                 st.caption(
-                    "La ligne orange = pression vendeuse estimée (1 − taker_buy_ratio). "
-                    "Montée post-spike = les holders vendent sur le pic = signature du dump."
+                    "Ligne orange — Pression vendeuse estimée (1 − taker_buy_ratio_1m). "
+                    "Chaque pic indique une minute où les vendeurs dominaient les acheteurs. "
+                    "Montée soutenue post-spike = signature du dump : les holders vendent sur le pic de cours."
                 )
 
                 pre_vols  = kl_ext.loc[mask_pre,  "volume"]
@@ -586,9 +610,9 @@ elif page == "🔍 Démo live":
 
         # Threshold legend (change 2A)
         col1, col2, col3 = st.columns(3)
-        col1.error("🔴 Élevé = au-dessus du 75e percentile pump\n(valeur rare, typique des vrais pumps)")
-        col2.warning("🟡 Modéré = entre médiane et 75e percentile\n(signal présent mais pas extrême)")
-        col3.success("🟢 Normal = en dessous de la médiane pump\n(comportement habituel du marché)")
+        col1.error("Élevé — au-dessus du 75e percentile pump\n(valeur rare, typique des vrais pumps)")
+        col2.warning("Modéré — entre médiane et 75e percentile\n(signal présent mais pas extrême)")
+        col3.success("Normal — en dessous de la médiane pump\n(comportement habituel du marché)")
 
         rows = []
         for feat in FEAT_COLS:
@@ -663,35 +687,35 @@ Si oui → escalader vers un analyste senior.
             else:
                 st.info("ℹ️ Signal modéré sans pattern composite clair — probablement du bruit de marché.")
 
-        # ── Feature 4 : SHAP ──────────────────────────────────────────────────
-        st.subheader("Explication SHAP — pourquoi ce score ?")
-        try:
-            _explainer = load_shap_explainer()
-            _shap_vals = _explainer.shap_values(feat_scaled)[0]   # shape (14,)
-            _shap_df   = pd.DataFrame({
-                "Feature": FEAT_COLS,
-                "SHAP":    _shap_vals,
-            }).sort_values("SHAP")
-            _fig_shap = go.Figure(go.Bar(
-                x=_shap_df["SHAP"],
-                y=_shap_df["Feature"],
-                orientation="h",
-                marker_color=["#E84C4C" if v > 0 else "#4C9BE8" for v in _shap_df["SHAP"]],
-            ))
-            _fig_shap.update_layout(
-                title="Contribution de chaque feature au score d'anomalie (SHAP)",
-                xaxis_title="Valeur SHAP (positif = pousse vers anomalie, négatif = pousse vers normal)",
-                margin=dict(t=55, b=20, l=180),
-                height=420,
-            )
-            st.plotly_chart(_fig_shap, use_container_width=True)
-            st.caption(
-                "SHAP explique POURQUOI ce score. "
-                "Une feature rouge a poussé le modèle vers 'anomalie'. "
-                "Une feature bleue a poussé vers 'normal'."
-            )
-        except Exception as _e:
-            st.caption(f"SHAP indisponible : {_e}")
+        # ── SHAP in collapsed expander ─────────────────────────────────────
+        with st.expander("📊 Explication du score (SHAP) — cliquer pour voir", expanded=False):
+            try:
+                _explainer = load_shap_explainer()
+                _shap_vals = -_explainer.shap_values(feat_scaled)[0]
+                _shap_df   = pd.DataFrame({
+                    "Feature": FEAT_COLS,
+                    "SHAP":    _shap_vals,
+                }).sort_values("SHAP")
+                _fig_shap = go.Figure(go.Bar(
+                    x=_shap_df["SHAP"],
+                    y=_shap_df["Feature"],
+                    orientation="h",
+                    marker_color=["#E84C4C" if v > 0 else "#4C9BE8" for v in _shap_df["SHAP"]],
+                ))
+                _fig_shap.update_layout(
+                    title="Contribution de chaque feature au score d'anomalie (SHAP)",
+                    xaxis_title="Contribution au score d'anomalie (rouge = pousse vers alerte, bleu = pousse vers normal)",
+                    margin=dict(t=55, b=20, l=180),
+                    height=420,
+                )
+                st.plotly_chart(_fig_shap, use_container_width=True)
+                st.caption(
+                    "SHAP explique POURQUOI ce score. "
+                    "Une feature rouge a poussé le modèle vers 'anomalie'. "
+                    "Une feature bleue a poussé vers 'normal'."
+                )
+            except Exception as _e:
+                st.caption(f"SHAP indisponible : {_e}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
